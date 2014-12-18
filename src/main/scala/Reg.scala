@@ -89,7 +89,7 @@ object Reg {
     respectively.
     */
   def apply[T <: Data](outType: T = null, next: T = null, init: T = null,
-    clock: Clock = null): T = {
+    clock: Clock = null, ovr_reset: Bool = null): T = {
     var mType = outType
     if(mType == null) {
       mType = next
@@ -109,7 +109,7 @@ object Reg {
 
     if (init != null) for (((res_n, res_i), (rval_n, rval_i)) <- res.flatten zip init.flatten) {
       if (rval_i.getWidth < 0) ChiselError.error("Negative width to wire " + res_i)
-      res_i.comp = new RegReset
+      res_i.comp = new RegReset(if(ovr_reset != null) Option(ovr_reset) else None)
       res_i.comp.init("", regWidth(rval_i), res_i.comp, rval_i)
       res_i.inputs += res_i.comp
     } else for ((res_n, res_i) <- res.flatten) {
@@ -156,7 +156,8 @@ object RegInit {
 
 }
 
-class RegReset extends Reg {
+class RegReset(reset: Option[Bool]) extends Reg {
+  override def explicitReset = reset // for now, backend pass will check this and then resupply to assignReset
   override def assignReset(rst: => Bool): Boolean = {
     this.doProcAssign(inputs(1), rst)
     true

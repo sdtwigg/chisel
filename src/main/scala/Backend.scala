@@ -362,7 +362,7 @@ abstract class Backend extends FileSystemUtilities{
       if (module.clock == null)
         module.clock = module.parent.clock
       if (!module.hasExplicitReset)
-        module.reset_=
+        module.assignDefaultReset
     }
   }
 
@@ -370,19 +370,18 @@ abstract class Backend extends FileSystemUtilities{
   // assign it a clock and reset where
   // clock is chosen to be the component's clock if delay does not specify a clock
   // reset is chosen to be
+  //          delay's explicit reset
   //          component's explicit reset
-  //          delay's explicit clock's reset
   //          component's clock's reset
   def addClocksAndResets {
     Driver.bfs {
       _ match {
         case x: Delay =>
           val clock = if (x.clock == null) x.component.clock else x.clock
-          val reset =
+          val reset = x.explicitReset.getOrElse(
             if (x.component.hasExplicitReset) x.component._reset
-            else if (x.clock != null) x.clock.getReset
-            else if (x.component.hasExplicitClock) x.component.clock.getReset
             else x.component._reset
+          )
           x.assignReset(x.component.addResetPin(reset))
           x.assignClock(clock)
           x.component.addClock(clock)

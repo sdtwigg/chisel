@@ -189,7 +189,7 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
   def reset_=(r: Bool) {
     _reset = r
   }
-  def reset_=() {
+  def assignDefaultReset = {
     _reset = parent._reset
   }
 

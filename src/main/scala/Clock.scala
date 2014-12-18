@@ -32,7 +32,7 @@ package Chisel
 
 import scala.collection.mutable.ArrayBuffer
 
-class Clock(reset: Bool = Driver.implicitReset) extends Node {
+class Clock extends Node {
   val stateElms = new ArrayBuffer[Node]
   Driver.clocks += this
   init("", 1)
@@ -40,17 +40,8 @@ class Clock(reset: Bool = Driver.implicitReset) extends Node {
   var srcClock: Clock = null
   var initStr = ""
 
-  // returns a reset pin connected to reset for the component in scope
-  def getReset: Bool = {
-    if (Driver.compStack.length != 0) {
-      Driver.compStack.top.addResetPin(reset)
-    } else {
-      reset
-    }
-  }
-
   def * (x: Int): Clock = {
-    val clock = new Clock(reset)
+    val clock = new Clock
     clock.init("", 1)
     clock.srcClock = this
     clock.initStr = " * " + x + ";\n"
@@ -58,7 +49,7 @@ class Clock(reset: Bool = Driver.implicitReset) extends Node {
   }
 
   def / (x: Int): Clock = {
-    val clock = new Clock(reset)
+    val clock = new Clock
     clock.init("", 1)
     clock.srcClock = this
     clock.initStr = " / " + x + ";\n"
