@@ -286,7 +286,7 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
         if (name != "") pin nameIt (name, true)
         b.elements += ((pin.name, pin))
       }
-      case _ => // Is it possible?
+      //case _ => // Is it possible? Yes, should throw exception or, in Module, restrict io to be Bundle
     }
     pin
   }
