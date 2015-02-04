@@ -372,7 +372,7 @@ class QueueIO[T <: Data](gen: T, entries: Int) extends Bundle
   val count = UInt(OUTPUT, log2Up(entries + 1))
 }
 
-class Queue[T <: Data](gen: T, val entries: Int, pipe: Boolean = false, flow: Boolean = false, _reset: Bool = null) extends Module(_reset=_reset)
+class Queue[T <: Data](gen: T, val entries: Int, pipe: Boolean = false, flow: Boolean = false, explReset: Bool = null) extends Module(explReset=explReset)
 {
   val io = new QueueIO(gen, entries)
 
@@ -434,7 +434,7 @@ object Queue
 
 class AsyncFifoIO[T <: Data](gen: T, entries: Int) extends QueueIO(gen, entries) {
   val enq_rst = Bool(INPUT)
-  val deq_rst = Bool(OUTPUT)
+  val deq_rst = Bool(INPUT)
 }
 
 class AsyncFifo[T<:Data](gen: T, entries: Int, enq_clk: Clock, deq_clk: Clock) extends Module {

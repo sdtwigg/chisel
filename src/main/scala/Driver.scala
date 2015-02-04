@@ -117,12 +117,6 @@ object Driver extends FileSystemUtilities{
 
   def setTopComponent(mod: Module): Unit = {
     topComponent = mod
-    implicitReset.component = topComponent
-    implicitClock.component = topComponent
-    topComponent.reset = implicitReset
-    topComponent.hasExplicitReset = true
-    topComponent.clock = implicitClock
-    topComponent.hasExplicitClock = true
   }
 
   def bfs (visit: Node => Unit) = {
@@ -135,14 +129,9 @@ object Driver extends FileSystemUtilities{
       queue enqueue b.io
     for (c <- components; (n, io) <- c.wires)
       queue enqueue io
-    // Ensure any nodes connected to reset are visited.
-    for (c <- components) {
-      if (!(c.defaultResetPin == null)) {
-        queue enqueue c.defaultResetPin
-      }
-      if (!(c._reset == null) && !(c._reset == implicitReset)) {
-        queue enqueue c._reset.getNode
-      }
+    // Ensure any nodes connected to extra pins (e.g. reset) are visited.
+    for (c <- components; eP <- c.extraPins; (n, extraPin) <- eP.flatten) {
+      queue enqueue extraPin
     }
 
     // Do BFS
@@ -176,14 +165,9 @@ object Driver extends FileSystemUtilities{
     // initialize DFS
     for (c <- components; (n, io) <- c.wires)
       stack push io
-    // Ensure any nodes connected to reset are visited.
-    for (c <- components) {
-      if (!(c.defaultResetPin == null)) {
-        stack push c.defaultResetPin
-      }
-      if (!(c._reset == null) && !(c._reset == implicitReset)) {
-        stack push c._reset.getNode
-      }
+    // Ensure any nodes connected to extra pins (e.g. reset) are visited.
+    for (c <- components; eP <- c.extraPins; (n, extraPin) <- eP.flatten) {
+      stack push extraPin
     }
     for (c <- components; a <- c.debugs)
       stack push a
@@ -250,14 +234,9 @@ object Driver extends FileSystemUtilities{
     for(c <- components; (n, io) <- c.wires) {
       pushInitialNode(io)
     }
-    // Ensure any nodes connected to reset are visited.
-    for (c <- components) {
-      if (!(c.defaultResetPin == null)) {
-        pushInitialNode(c.defaultResetPin)
-      }
-      if (!(c._reset == null) && !(c._reset == implicitReset)) {
-        pushInitialNode(c._reset.getNode)
-      }
+    // Ensure any nodes connected to extra pins (e.g. reset) are visited.
+    for (c <- components; eP <- c.extraPins; (n, extraPin) <- eP.flatten) {
+      pushInitialNode(extraPin)
     }
     val stack = inputs ++ res
 
@@ -347,11 +326,6 @@ object Driver extends FileSystemUtilities{
     hasSRAM = false
     sramMaxSize = 0
     topComponent = null
-    clocks.clear()
-    implicitReset.isIo = true
-    implicitReset.setName("reset")
-    implicitClock = new Clock()
-    implicitClock.setName("clk")
     nodes.clear()
     orderedNodes.clear()
     isInGetWidth = false
@@ -506,9 +480,9 @@ object Driver extends FileSystemUtilities{
   val parStack = new Stack[Parameters]
   var stackIndent = 0
   val printStackStruct = ArrayBuffer[(Int, Module)]()
-  val clocks = ArrayBuffer[Clock]()
-  val implicitReset = Bool(INPUT)
-  var implicitClock: Clock = null
+  def clocks: Seq[Clock]   = topComponent.clocks
+  def implicitReset: Bool  = topComponent.reset
+  def implicitClock: Clock = topComponent.clock
   var isInGetWidth: Boolean = false
   var modStackPushed: Boolean = false
   var modAdded: Boolean = false

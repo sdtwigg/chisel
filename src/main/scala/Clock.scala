@@ -32,14 +32,24 @@ package Chisel
 
 import scala.collection.mutable.ArrayBuffer
 
-class Clock extends Node {
+object Clock {
+  def apply(name: String): Clock = {
+    clock_cache.getOrElseUpdate(name, new Clock(name))
+  }
+
+  private val clock_cache = scala.collection.mutable.Map[String,Clock]()
+}
+
+class Clock private (_name: String) extends Node {
+  setName(_name)
+
   val stateElms = new ArrayBuffer[Node]
-  Driver.clocks += this
-  init("", 1)
+  init(name, 1)
 
   var srcClock: Clock = null
   var initStr = ""
-
+/*
+  // Removed temporarily until naming situation can be resolved
   def * (x: Int): Clock = {
     val clock = new Clock
     clock.init("", 1)
@@ -55,4 +65,5 @@ class Clock extends Node {
     clock.initStr = " / " + x + ";\n"
     clock
   }
+*/
 }

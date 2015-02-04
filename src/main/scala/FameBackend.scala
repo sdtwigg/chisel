@@ -218,7 +218,7 @@ class Fame1Wrapper(f: => Module) extends Module {
   def transform(isTop: Boolean, module: Module, parent: Module): Unit = {
     Fame1Transform.fame1Modules += module
     val isFire = Bool(INPUT)
-    module.addPin(isFire, "is_fire")
+    module.deprec_addIOPin(isFire, "is_fire")
     Fame1Transform.fireSignals(module) = isFire
     if(!isTop){
       Predef.assert(Fame1Transform.fireSignals(parent) != null)

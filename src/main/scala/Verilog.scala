@@ -173,17 +173,18 @@ class VerilogBackend extends Backend {
   def emitDef(c: Module): String = {
     val spacing = (if(c.verilog_parameters != "") " " else "");
     var res = "  " + c.moduleName + " " + c.verilog_parameters + spacing + c.name + "(";
-    if (c.clocks.length > 0) {
-      res = res + (c.clocks).map(x => "." + emitRef(x) + "(" + emitRef(x) + ")").reduceLeft(_ + ", " + _)
-    }
-    if (c.resets.size > 0 ) {
-      if (c.clocks.length > 0) res = res + ", "
-      res = res + (c.resets.values.toList).map(x => "." + emitRef(x) + "(" + emitRef(x.inputs(0)) + ")").reduceLeft(_ + ", " + _)
-    }
-    var isFirst = true;
+    val clock_defs: List[String] = c.clocks.map(x => s".${emitRef(x)}(${emitRef(x)})")
+    val extra_defs: List[String] = c.extraPins.map(eP => {
+      eP.flatten.toList.map(_._2).map(x => s".${emitRef(x)}(${emitRef(x.inputs(0))})")
+    }).fold(List[String]())(_++_)
+
+    res += (clock_defs ++ extra_defs).mkString(", ")
+    
     val portDecs = new ArrayBuffer[StringBuilder]
+
+    // TODO: Re-write this to be less insane
     for ((n, w) <- c.wires) {
-      if(n != "reset") {
+      if(n != "reset") { // It is unclear why this check is here
         var portDec = "." + n + "( ";
         w match {
           case io: Bits  =>
@@ -238,7 +239,8 @@ class VerilogBackend extends Backend {
     val uncommentedPorts = portDecs.filter(!_.result.contains("//"))
     uncommentedPorts.slice(0, uncommentedPorts.length-1).map(_.append(","))
     portDecs.map(_.insert(0, "       "))
-    if (c.clocks.length > 0 || c.resets.size > 0) res += ",\n" else res += "\n"
+
+    if (clock_defs.nonEmpty || extra_defs.nonEmpty) res += ",\n" else res += "\n"
     res += portDecs.map(_.result).reduceLeft(_ + "\n" + _)
     res += "\n  );\n";
     if (c.wires.map(_._2.driveRand).reduceLeft(_ || _)) {
@@ -438,7 +440,10 @@ class VerilogBackend extends Backend {
     val scanNodes = for ((n, io) <- c.wires ; if io.dir == INPUT) yield io
     val mainClk = Driver.implicitClock
     val clocks = ListSet(mainClk) ++ c.clocks
-    val resets = c.resets.unzip._2.toList
+    val resets = c.extraPins.filter(_.name == "reset").map(_ match {
+      case b: Bool => (b)
+      case x => throw new Exception(s"genHarness: reset pin expected to be of type Bool, is ${x.getClass}")
+    })
 
     harness.write("module test;\n")
     for (node <- scanNodes) {
@@ -843,8 +848,14 @@ class VerilogBackend extends Backend {
     val res = new StringBuilder()
     var first = true;
     var nl = "";
-    if (c.clocks.length > 0 || c.resets.size > 0)
-      res.append((c.clocks ++ c.resets.values.toList).map(x => "input " + emitRef(x)).reduceLeft(_ + ", " + _))
+    val clock_defs: List[String] = c.clocks.map(x => s"input ${emitRef(x)}")
+    val extra_defs: List[String] = c.extraPins.map(eP => {
+      eP.flatten.toList.map(_._2).map(x =>
+        if(x.dir == INPUT) s"input ${emitRef(x)}" else s"output ${emitRef(x)}"
+      )
+    }).fold(List[String]())(_++_)
+    res.append((clock_defs ++ extra_defs).mkString(", "))
+
     val ports = new ArrayBuffer[StringBuilder]
     for ((n, w) <- c.wires) {
       // if(first && !hasReg) {first = false; nl = "\n"} else nl = ",\n";
@@ -863,7 +874,7 @@ class VerilogBackend extends Backend {
     }
     val uncommentedPorts = ports.filter(!_.result.contains("//"))
     uncommentedPorts.slice(0, uncommentedPorts.length-1).map(_.append(","))
-    if (c.clocks.length > 0 || c.resets.size > 0) res.append(",\n") else res.append("\n")
+    if (clock_defs.nonEmpty || extra_defs.nonEmpty) res.append(",\n") else res.append("\n")
     res.append(ports.map(_.result).reduceLeft(_ + "\n" + _))
     res.append("\n);\n\n");
     res.append(emitDecs(c));

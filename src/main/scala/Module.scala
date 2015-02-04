@@ -30,7 +30,7 @@
 
 package Chisel
 import scala.math._
-import scala.collection.mutable.{ArrayBuffer, Stack, BitSet}
+import scala.collection.mutable.{ArrayBuffer, ListBuffer, Stack, BitSet}
 import scala.collection.mutable.{LinkedHashSet, HashSet, HashMap}
 import scala.collection.mutable.{Queue=>ScalaQueue}
 import java.lang.reflect.Modifier._
@@ -86,9 +86,7 @@ object Module {
   private def pop(){
     val c = Driver.compStack.pop
     if( !Driver.compStack.isEmpty ) {
-      val dad = Driver.compStack.top
-      c.parent = dad
-      dad.children += c
+      Driver.compStack.top.children += c
     }
     Driver.stackIndent -= 1
     c.level = 0
@@ -122,10 +120,12 @@ object Module {
          ( + ) sets the default clock domain for all Delay nodes within scope
          ( + ) overridden if Delay specifies its own clock
    ( + ) reset parameter
-         ( + ) sets the default reset signal
-         ( + ) overridden if Delay specifies its own clock w/ reset != implicitReset
+         ( + ) by default, use the parent's reset
+         ( + ) sets the default reset signal for all Delay nodes within scope
+         ( + ) overridden if Delay specifies its own reset
+Note: explicit clock and reset ARE IGNORED for the top-level module
 */
-abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool = null) {
+abstract class Module(explClock: Clock = null, explReset: Bool = null) {
   /** A backend(Backend.scala) might generate multiple module source code
     from one Module, based on the parameters to instantiate the component
     instance. Since we do not want to blindly generate one module per instance
@@ -135,14 +135,12 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
     Module/modules source text before their first instantiation. */
   var level = 0;
   var traversal = 0;
-  var ioVal: Data = null;
   /** Name of the instance. */
   var name: String = "";
   /** Name of the module this component generates (defaults to class name). */
   var moduleName: String = "";
   var named = false;
   val bindings = new ArrayBuffer[Binding];
-  var parent: Module = null;
   val children = ArrayBuffer[Module]()
   val debugs = LinkedHashSet[Node]()
   val printfs = ArrayBuffer[Printf]()
@@ -157,41 +155,65 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
   val nodes = new LinkedHashSet[Node]
   val names = new HashMap[String, Node]
   var nindex = -1;
-  var defaultWidth = 32;
   var pathParent: Module = null;
   var verilog_parameters = "";
-  val clocks = new ArrayBuffer[Clock]
-  val resets = new HashMap[Bool, Bool]
+  
+  val parent = Module.getComponent
+    // Have not yet pushed onto stack so parent is head of stack
+    // Warning: Is null for the top-level component
+  
+  // clocks is all clocks that are used AT LEAST ONCE by this or children
+  private val _clocks = scala.collection.mutable.Set[Clock]()
+  def clocks = _clocks.toList.sortWith(_.name < _.name) // guarantee proper ordering
+  def addClock(c: Clock) = {_clocks.add(c)}
 
-  def hasReset = !(reset == null)
-  def hasClock = !(clock == null)
+  private val _extraPins = new ListBuffer[Data]
+    // Holds reset, for example
+  def extraPins = _extraPins.toList
+  def addPin[T<:Data](newPin: T, pinName: String): T = {
+    for ((n, pinElem) <- newPin.flatten) {
+      pinElem.component = this
+      pinElem.isIo = true
+    }
+    newPin.setName(pinName)
+    
+    _extraPins.append(newPin)
+    newPin
+  }
 
+  lazy val reset: Bool = {
+    // Create a reset pin for this module
+    val newPin = addPin(Bool(INPUT),"reset")
+
+    // Connect this child reset in parent IF there is a parent
+    if(parent != null) {
+      val resetSource = if(explReset != null) explReset else parent.reset
+      newPin := resetSource
+    }
+
+    newPin
+  }
+
+  val clock: Clock = if(parent != null) {
+    // Use explicit clock or clock of parent
+    if(explClock != null) explClock else parent.clock
+  } else {
+    // No parent so make own clock called clk
+    Clock("clk")
+  }
+
+  //*********************************************************************
+  // MODULE IS NOW PUSHED ONTO THE STACK
   Driver.components += this
   push(this)
+  //*********************************************************************
+  // Do not move this haphazardly as some constructor code must be run
+  //    before this
+  //*********************************************************************
 
   //Parameter Stuff
   lazy val params = Module.params
   params.path = this.getClass :: params.path
-
-  var hasExplicitClock = !(clock == null)
-  var hasExplicitReset = !(_reset == null)
-
-  var defaultResetPin: Bool = null
-  def reset = {
-    if (defaultResetPin == null) {
-      defaultResetPin = Bool(INPUT)
-      defaultResetPin.isIo = true
-      defaultResetPin.component = this
-      defaultResetPin.setName("reset")
-    }
-    defaultResetPin
-  }
-  def reset_=(r: Bool) {
-    _reset = r
-  }
-  def assignDefaultReset = {
-    _reset = parent._reset
-  }
 
   override def toString = this.getClass.toString
 
@@ -256,27 +278,7 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
     res
   }
 
-  // returns the pin connected to the reset signal, creates a new one if
-  // no such pin exists
-  def addResetPin(reset: Bool): Bool = {
-    def makeIO = {
-      val res = Bool(INPUT)
-      res.isIo = true
-      res.component = this
-      res
-    }
-    def pin =
-      if (reset == _reset) this.reset
-      else makeIO
-    this.resets.getOrElseUpdate(reset, pin)
-  }
-
-  def addClock(clock: Clock) {
-    if (!this.clocks.contains(clock))
-      this.clocks += clock
-  }
-
-  def addPin[T <: Data](pin: T, name: String = "") = {
+  def deprec_addIOPin[T <: Data](pin: T, name: String = "") = {
     io match {
       case b: Bundle => {
         for ((n, io) <- pin.flatten) {
@@ -324,8 +326,10 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
       queue enqueue io
     for (child <- children ; (n, io) <- child.wires ; if io.isIo && io.dir == INPUT)
       queue enqueue io
-    if (!(defaultResetPin == null))
-      queue enqueue defaultResetPin
+    for (eP <- extraPins ; (n, extraPin) <- eP.flatten)
+      // unclear if should only check extra pins that are outputs
+      // but reset, an input was priorly checked
+      queue enqueue extraPin
 
     // Do BFS
     val walked = HashSet[Node]()
@@ -363,8 +367,10 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
       stack push io
     for (child <- children ; (n, io) <- child.wires ; if io.isIo && io.dir == INPUT)
       stack push io
-    if (!(defaultResetPin == null))
-      stack push defaultResetPin
+    for (eP <- extraPins ; (n, extraPin) <- eP.flatten)
+      // unclear if should only check extra pins that are outputs
+      // but reset, an input was priorly checked
+      stack push extraPin
     for (a <- debugs)
       stack push a
 
@@ -395,14 +401,6 @@ abstract class Module(var clock: Clock = null, private[Chisel] var _reset: Bool 
           }
         }
       }
-    }
-  }
-
-  def addDefaultReset {
-    if (!(defaultResetPin == null)) {
-      addResetPin(_reset)
-      if (this != Driver.topComponent && hasExplicitReset)
-        defaultResetPin.inputs += _reset
     }
   }
 

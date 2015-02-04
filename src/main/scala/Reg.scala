@@ -156,11 +156,10 @@ object RegInit {
 
 }
 
-class RegReset(reset: Option[Bool]) extends Reg {
-  override def explicitReset = reset // for now, backend pass will check this and then resupply to assignReset
-  override def assignReset(rst: => Bool): Boolean = {
-    this.doProcAssign(inputs(1), rst)
-    true
+class RegReset(explReset: Option[Bool]) extends Reg {
+  val reset = explReset.getOrElse(component.reset)
+  override def handleReset = {
+    this.doProcAssign(inputs(1), reset)
   }
 }
 
