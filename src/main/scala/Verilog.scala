@@ -754,9 +754,13 @@ class VerilogBackend extends Backend {
       }
     }
     for (m <- c.nodes) {
-      val clkDomain = clkDomains getOrElse (m.clock, null)
-      if (m.clock != null && clkDomain != null)
-        clkDomain.append(emitReg(m))
+      m match {
+        case d: Delay => {
+          val clkDomain = clkDomains getOrElse (d.clock, null)
+          clkDomain.append(emitReg(d))
+        }
+        case _ =>
+      }
     }
     for (p <- c.printfs) {
       val clkDomain = clkDomains getOrElse (p.clock, null)
@@ -795,7 +799,7 @@ class VerilogBackend extends Backend {
     "`endif\n"
   }
 
-  def emitReg(node: Node): String = {
+  def emitReg(node: Delay): String = {
     node match {
       case reg: Reg =>
         def cond(c: Node) = "if(" + emitRef(c) + ") begin"

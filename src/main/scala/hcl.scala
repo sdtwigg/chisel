@@ -149,9 +149,9 @@ abstract class BlackBox extends Module {
 }
 
 
-class Delay extends Node {
+trait Delay extends Node {
+  def clock: Clock
   override def isReg: Boolean = true
-  def assignClock(clk: Clock): Unit = { clock = clk }
   def handleReset: Unit = {}
     // Called in a backend pass for all delays
     // Intent here is to add reset mux to design here

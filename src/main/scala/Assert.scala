@@ -36,6 +36,8 @@ import Node._
 import ChiselError._
 
 class Assert(condIn: Bool, resetIn: Bool, val message: String) extends Delay {
+  val clock = component.clock
+
   inputs += condIn || resetIn
   inputs += resetIn
   def cond: Node = inputs(0)
@@ -48,7 +50,9 @@ class BitsInObject(x: Node) extends UInt {
   override lazy val isInObject: Boolean = true
 }
 
-class PrintfBase(formatIn: String, argsIn: Seq[Node]) extends Node {
+class PrintfBase(formatIn: String, argsIn: Seq[Node]) extends Delay {
+  val clock = component.clock
+  
   inputs ++= argsIn.map(a => new BitsInObject(a))
   def args: ArrayBuffer[Node] = inputs
   override lazy val isInObject: Boolean = true
@@ -117,5 +121,4 @@ class Printf(condIn: Bool, formatIn: String, argsIn: Seq[Node]) extends PrintfBa
   inputs += condIn
   override def args: ArrayBuffer[Node] = inputs.init
   def cond: Node = inputs.last
-  def assignClock(clk: Clock): Unit = { clock = clk }
 }

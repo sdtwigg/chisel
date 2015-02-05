@@ -441,27 +441,27 @@ class AsyncFifo[T<:Data](gen: T, entries: Int, enq_clk: Clock, deq_clk: Clock) e
   val io = new AsyncFifoIO(gen, entries)
   val asize = log2Up(entries)
 
-  val s1_rptr_gray = Reg(init=UInt(0, asize+1), clock=enq_clk, ovr_reset = io.enq_rst)
-  val s2_rptr_gray = Reg(init=UInt(0, asize+1), clock=enq_clk, ovr_reset = io.enq_rst)
-  val s1_rst_deq   = Reg(init=Bool(false),      clock=enq_clk, ovr_reset = io.enq_rst)
-  val s2_rst_deq   = Reg(init=Bool(false),      clock=enq_clk, ovr_reset = io.enq_rst)
+  val s1_rptr_gray = Reg(init=UInt(0, asize+1), explClock=enq_clk, explReset = io.enq_rst)
+  val s2_rptr_gray = Reg(init=UInt(0, asize+1), explClock=enq_clk, explReset = io.enq_rst)
+  val s1_rst_deq   = Reg(init=Bool(false),      explClock=enq_clk, explReset = io.enq_rst)
+  val s2_rst_deq   = Reg(init=Bool(false),      explClock=enq_clk, explReset = io.enq_rst)
 
-  val s1_wptr_gray = Reg(init=UInt(0, asize+1), clock=deq_clk, ovr_reset = io.deq_rst)
-  val s2_wptr_gray = Reg(init=UInt(0, asize+1), clock=deq_clk, ovr_reset = io.deq_rst)
-  val s1_rst_enq   = Reg(init=Bool(false),      clock=deq_clk, ovr_reset = io.deq_rst)
-  val s2_rst_enq   = Reg(init=Bool(false),      clock=deq_clk, ovr_reset = io.deq_rst)
+  val s1_wptr_gray = Reg(init=UInt(0, asize+1), explClock=deq_clk, explReset = io.deq_rst)
+  val s2_wptr_gray = Reg(init=UInt(0, asize+1), explClock=deq_clk, explReset = io.deq_rst)
+  val s1_rst_enq   = Reg(init=Bool(false),      explClock=deq_clk, explReset = io.deq_rst)
+  val s2_rst_enq   = Reg(init=Bool(false),      explClock=deq_clk, explReset = io.deq_rst)
 
-  val wptr_bin     = Reg(init=UInt(0, asize+1), clock=enq_clk, ovr_reset = io.enq_rst)
-  val wptr_gray    = Reg(init=UInt(0, asize+1), clock=enq_clk, ovr_reset = io.enq_rst)
-  val not_full     = Reg(init=Bool(false),      clock=enq_clk, ovr_reset = io.enq_rst)
+  val wptr_bin     = Reg(init=UInt(0, asize+1), explClock=enq_clk, explReset = io.enq_rst)
+  val wptr_gray    = Reg(init=UInt(0, asize+1), explClock=enq_clk, explReset = io.enq_rst)
+  val not_full     = Reg(init=Bool(false),      explClock=enq_clk, explReset = io.enq_rst)
 
   val wptr_bin_next = wptr_bin + (io.enq.valid & not_full)
   val wptr_gray_next = (wptr_bin_next >> UInt(1)) ^ wptr_bin_next
   val not_full_next = !(wptr_gray_next === Cat(~s2_rptr_gray(asize,asize-1), s2_rptr_gray(asize-2,0)))
 
-  val rptr_bin     = Reg(init=UInt(0, asize+1), clock=deq_clk, ovr_reset = io.deq_rst)
-  val rptr_gray    = Reg(init=UInt(0, asize+1), clock=deq_clk, ovr_reset = io.deq_rst)
-  val not_empty    = Reg(init=Bool(false),      clock=deq_clk, ovr_reset = io.deq_rst)
+  val rptr_bin     = Reg(init=UInt(0, asize+1), explClock=deq_clk, explReset = io.deq_rst)
+  val rptr_gray    = Reg(init=UInt(0, asize+1), explClock=deq_clk, explReset = io.deq_rst)
+  val not_empty    = Reg(init=Bool(false),      explClock=deq_clk, explReset = io.deq_rst)
 
   val rptr_bin_next = rptr_bin + (io.deq.ready & not_empty)
   val rptr_gray_next = (rptr_bin_next >> UInt(1)) ^ rptr_bin_next
@@ -483,7 +483,7 @@ class AsyncFifo[T<:Data](gen: T, entries: Int, enq_clk: Clock, deq_clk: Clock) e
   io.enq.ready := not_full
   io.deq.valid := not_empty
 
-  val mem = Mem(gen, entries, clock=enq_clk)
+  val mem = Mem(gen, entries, explClock=enq_clk)
   when (io.enq.valid && io.enq.ready) {
     mem(wptr_bin(asize-1,0)) := io.enq.bits
   }

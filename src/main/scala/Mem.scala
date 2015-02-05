@@ -41,11 +41,11 @@ import scala.collection.mutable.{ArrayBuffer, HashMap}
 object Mem {
   def apply[T <: Data](out: T, n: Int, seqRead: Boolean = false,
                        orderedWrites: Boolean = false,
-                       clock: Clock = null): Mem[T] = {
+                       explClock: Clock = null): Mem[T] = {
+    val clock = if(explClock != null) Option(explClock) else None
     val gen = out.clone
     Reg.validateGen(gen)
-    val res = new Mem(() => gen, n, seqRead, orderedWrites)
-    if (!(clock == null)) res.clock = clock
+    val res = new Mem(() => gen, n, seqRead, orderedWrites, clock)
     Driver.hasMem = true
     Driver.hasSRAM = Driver.hasSRAM | seqRead
     if (seqRead) {
@@ -60,7 +60,9 @@ abstract class AccessTracker extends Delay {
   def readAccesses: ArrayBuffer[_ <: MemAccess]
 }
 
-class Mem[T <: Data](gen: () => T, val n: Int, val seqRead: Boolean, val orderedWrites: Boolean) extends AccessTracker with VecLike[T] {
+class Mem[T <: Data](gen: () => T, val n: Int, val seqRead: Boolean, val orderedWrites: Boolean, explClock: Option[Clock]) extends AccessTracker with VecLike[T] {
+  val clock = explClock.getOrElse(component.clock)
+
   if (seqRead)
     require(!orderedWrites) // sad reality of realizable SRAMs
   def writeAccesses: ArrayBuffer[MemWrite] = writes ++ readwrites.map(_.write)
@@ -145,7 +147,7 @@ class Mem[T <: Data](gen: () => T, val n: Int, val seqRead: Boolean, val ordered
 
   override def toString: String = "TMEM(" + ")"
 
-  override def clone = new Mem(gen, n, seqRead, orderedWrites)
+  override def clone = new Mem(gen, n, seqRead, orderedWrites, explClock)
 
   def computePorts = {
     reads --= reads.filterNot(_.used)
@@ -162,11 +164,6 @@ class Mem[T <: Data](gen: () => T, val n: Int, val seqRead: Boolean, val ordered
   }
 
   def isInline = Driver.isInlineMem || !reads.isEmpty
-
-  override def assignClock(clk: Clock): Unit = {
-    for (w <- writes) w.clock = clk
-    super.assignClock(clk)
-  }
 }
 
 abstract class MemAccess(val mem: Mem[_], addri: Node) extends Node {
@@ -221,10 +218,11 @@ class MemReadWrite(val read: MemSeqRead, val write: MemWrite) extends MemAccess(
   override def getPortType = if (write.isMasked) "mrw" else "rw"
 }
 
-class MemWrite(mem: Mem[_], condi: Bool, addri: Node, datai: Node, maski: Node) extends MemAccess(mem, addri) {
+class MemWrite(mem: Mem[_], condi: Bool, addri: Node, datai: Node, maski: Node) extends MemAccess(mem, addri) with Delay {
+  def clock = mem.clock
+
   override def cond = inputs(1)
   def cond_=(c: Bool) = inputs(1) = c
-  clock = mem.clock
 
   inferWidth = fixWidth(mem.data.getWidth)
 

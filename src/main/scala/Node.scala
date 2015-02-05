@@ -156,7 +156,6 @@ abstract class Node extends nameable {
     } else null
   var prune = false
   var driveRand = false
-  var clock: Clock = null
   var cntrIdx = -1
 
   val _id = Driver.nodes.length

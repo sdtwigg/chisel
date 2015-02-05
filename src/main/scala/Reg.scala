@@ -89,7 +89,7 @@ object Reg {
     respectively.
     */
   def apply[T <: Data](outType: T = null, next: T = null, init: T = null,
-    clock: Clock = null, ovr_reset: Bool = null): T = {
+    explClock: Clock = null, explReset: Bool = null): T = {
     var mType = outType
     if(mType == null) {
       mType = next
@@ -104,16 +104,19 @@ object Reg {
     val gen = mType.clone
     validateGen(gen)
 
+    val clockOption = if(explClock != null) Option(explClock) else None
+
     // asOutput flip the direction and returns this.
     val res = gen.asOutput
 
     if (init != null) for (((res_n, res_i), (rval_n, rval_i)) <- res.flatten zip init.flatten) {
       if (rval_i.getWidth < 0) ChiselError.error("Negative width to wire " + res_i)
-      res_i.comp = new RegReset(if(ovr_reset != null) Option(ovr_reset) else None)
+      val resetOption = if(explReset != null) Option(explReset) else None
+      res_i.comp = new RegReset(resetOption, clockOption)
       res_i.comp.init("", regWidth(rval_i), res_i.comp, rval_i)
       res_i.inputs += res_i.comp
     } else for ((res_n, res_i) <- res.flatten) {
-      res_i.comp = new Reg
+      res_i.comp = new Reg(clockOption)
       val w = res_i.getWidthW()
       res_i.comp.init("", regWidth(w), res_i.comp)
       res_i.inputs += res_i.comp
@@ -124,14 +127,6 @@ object Reg {
     }
 
     res.setIsTypeNode
-
-    // set clock
-    for ((name, sig) <- res.flatten) {
-      if (sig.comp != null)
-        sig.comp.clock = clock
-      else
-        sig.clock = clock
-    }
 
     res
   }
@@ -156,14 +151,16 @@ object RegInit {
 
 }
 
-class RegReset(explReset: Option[Bool]) extends Reg {
+class RegReset(explReset: Option[Bool], explClock: Option[Clock]) extends Reg(explClock) {
   val reset = explReset.getOrElse(component.reset)
   override def handleReset = {
     this.doProcAssign(inputs(1), reset)
   }
 }
 
-class Reg extends Delay with proc {
+class Reg(explClock: Option[Clock]) extends Delay with proc {
+  val clock = explClock.getOrElse(component.clock)
+
   override def toString: String = "REG(" + name + ")"
 
   override def forceMatchingWidths: Unit =

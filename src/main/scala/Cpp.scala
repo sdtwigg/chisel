@@ -1024,6 +1024,7 @@ class CppBackend extends Backend {
     // Define some classes to help us deal with C++ methods.
     type CType = String
     case class CTypedName(ctype: CType, name: String)
+    // This contains mutable state so probably shouldn't be a case class 
     case class CMethod(name: CTypedName, arguments: Array[CTypedName] = Array[CTypedName](), cclass: String = c.name + "_t") {
       val body = new StringBuilder
       val argumentList = arguments.map(a => "%s %s".format(a.ctype, a.name)).mkString(", ")
@@ -1131,7 +1132,7 @@ class CppBackend extends Backend {
     }
 
     // Generate header file
-    def genHeader(vcd: Backend, islands: Array[Island], nInitMethods: Int, nSetCircuitMethods: Int, nDumpInitMethods: Int, nDumpMethods: Int, nInitMappingTableMethods: Int) {
+    def genHeader(vcd: Backend, nInitMethods: Int, nSetCircuitMethods: Int, nDumpInitMethods: Int, nDumpMethods: Int, nInitMappingTableMethods: Int) {
       val n = Driver.appendString(Some(c.name),Driver.chiselConfigClassName)
       val out_h = createOutputFile(n + ".h");
       out_h.write("#ifndef __" + c.name + "__\n");
@@ -1180,9 +1181,9 @@ class CppBackend extends Backend {
         out_h.write(" public:\n");
       }
 
+      out_h.write("  void clock_lo ( dat_t<1> reset );\n")
       for ( clock <- Driver.clocks) {
         val clockNameStr = clkName(clock).toString()
-        out_h.write("  void clock_lo" + clockNameStr + " ( dat_t<1> reset );\n")
         out_h.write("  void clock_hi" + clockNameStr + " ( dat_t<1> reset );\n")
       }
       out_h.write("  int clock ( dat_t<1> reset );\n")
@@ -1311,12 +1312,10 @@ class CppBackend extends Backend {
         writeCppFile("  if (" + emitRef(clock) + "_cnt == 0) clock_hi" + clkName(clock) + "( reset );\n")
       }
       for (clock <- Driver.clocks) {
-        writeCppFile("  if (" + emitRef(clock) + "_cnt == 0) clock_lo" + clkName(clock) + "( reset );\n")
-      }
-      for (clock <- Driver.clocks) {
         writeCppFile("  if (" + emitRef(clock) + "_cnt == 0) " + emitRef(clock) + "_cnt = " +
                     emitRef(clock) + ";\n")
       }
+      writeCppFile("  clock_lo( reset ); // clock always jumps to next clock event so propogation needed\n")
       writeCppFile("  return min;\n")
       writeCppFile("}\n")
     }
@@ -1475,20 +1474,85 @@ class CppBackend extends Backend {
       val (numNodes, maxWidth, maxDepth) = findGraphDims
       ChiselError.info("NUM " + numNodes + " MAX-WIDTH " + maxWidth + " MAX-DEPTH " + maxDepth);
     }
-
-    // If we're partitioning a monolithic circuit into separate islands
-    // of combinational logic, generate those islands now.
-    val islands = if (partitionIslands) {
-      createIslands()
-    } else {
-      val e = ArrayBuffer[Island]()
-      e += new Island(0, new IslandNodes, new IslandNodes)
-      e.toArray
+    
+    if (Driver.isGenHarness) {
+      genHarness(c, c.name);
     }
-    val maxIslandId = islands.map(_.islandId).max
-    val nodeToIslandArray = generateNodeToIslandArray(islands)
+    if (!Params.space.isEmpty) {
+      val out_p = createOutputFile(c.name + ".p");
+      out_p.write(Params.toDotpStringParams);
+      out_p.close();
+    }
 
-    class ClockDomains {
+    abstract class NodeCodeGenerator {
+      // Determine which shadow registers we need, when option is set
+      if (allocateOnlyNeededShadowRegisters) {
+        for (n <- Driver.orderedNodes) {
+          determineRequiredShadowRegisters(n)
+        }
+      }
+
+      // Some helper classes for creating code repositories
+      val clockArgs = Array[CTypedName](CTypedName("dat_t<1>", "reset"))
+      object ClockHiMethods {def apply(clock: Clock): ClockHiMethods = new ClockHiMethods(clock)}
+      class ClockHiMethods(clock: Clock) {
+        val setup = CMethod(CTypedName("void", "clock_hi" + clkName(clock)), clockArgs)
+        val latch = CMethod(CTypedName("void", "clock_hi_dummy" + clkName(clock)), clockArgs)
+      }
+
+      def outputCpp(): Unit
+    }
+
+    class MonolithicCodeGen extends NodeCodeGenerator {
+      // Repositories for code
+      val allClockMethods = Driver.clocks.map(clock => (clock -> ClockHiMethods(clock))).toMap
+      val propogateCode = CMethod(CTypedName("void", "clock_lo"), clockArgs)
+
+      // Traverse graph to fill repositories
+      for (n <- Driver.orderedNodes) {
+        propogateCode.body.append(emitDefLo(n))
+        n match {
+          case d: Delay => {
+            val clockMethods = allClockMethods.getOrElse(d.clock,
+              throw new Exception(s"Unregistered clock ${d.clock} discovered at ${d}")
+            )
+            clockMethods.setup.body.append(emitInitHi(d))
+            clockMethods.latch.body.append(emitDefHi(d))
+          }
+          case _ =>
+        }
+      }
+
+      def outputCpp() = {
+        createCppFile()
+        writeCppFile(propogateCode.head + propogateCode.body.result + propogateCode.tail)
+
+        for(clockMethods <- allClockMethods.values) {
+          createCppFile()
+          writeCppFile(clockMethods.setup.head + clockMethods.setup.body.result)
+          // Note, we tacitly assume that the clock_hi setup and latch
+          // code have effectively the same signature and tail.
+          assert(clockMethods.setup.tail == clockMethods.latch.tail)
+          writeCppFile(clockMethods.latch.body.result + clockMethods.latch.tail)
+        }
+      }
+
+    }
+
+    class IslandsCodeGen extends NodeCodeGenerator {
+      // If we're partitioning a monolithic circuit into separate islands
+      // of combinational logic, generate those islands now.
+
+      val islands = if (partitionIslands) {
+        createIslands()
+      } else {
+        val e = ArrayBuffer[Island]()
+        e += new Island(0, new IslandNodes, new IslandNodes)
+        e.toArray
+      }
+      val maxIslandId = islands.map(_.islandId).max
+      val nodeToIslandArray = generateNodeToIslandArray(islands)
+
       type ClockCodeMethods = HashMap[Clock, (CMethod, CMethod, CMethod)]
       val code = new ClockCodeMethods
       val islandClkCode = new HashMap[Int, ClockCodeMethods]
@@ -1533,8 +1597,6 @@ class CppBackend extends Backend {
         }
       }
 
-      def clock(n: Node) = if (n.clock == null) Driver.implicitClock else n.clock
-
       def populate() {
         var nodeCount = 0
         def isNodeInIsland(node: Node, island: Island): Boolean = {
@@ -1546,7 +1608,7 @@ class CppBackend extends Backend {
           val defLo = emitDefLo(n)
           val initHi = emitInitHi(n)
           val defHi = emitDefHi(n)
-          val clockNode = clock(n)
+          val clockNode = throw new Exception("ADD THIS")//clock(n)
           if (defLo != "" || initHi != "" || defHi != "") {
             codeMethods(clockNode)._1.body.append(defLo)
             codeMethods(clockNode)._2.body.append(initHi)
@@ -1556,11 +1618,7 @@ class CppBackend extends Backend {
         }
 
         // Should we determine which shadow registers we need?
-        if (allocateOnlyNeededShadowRegisters || true) {
-          for (n <- Driver.orderedNodes) {
-            determineRequiredShadowRegisters(n)
-          }
-        }
+        // Done in base class constructor
 
         // Are we generating partitioned islands?
         if (!partitionIslands) {
@@ -1601,6 +1659,7 @@ class CppBackend extends Backend {
           }
         }
       }
+      populate() // CALL THIS DURING CONSTRUCTION
 
       // This is the opposite of LineLimitedMethods.
       // It collects output until a threshold is reached.
@@ -1650,7 +1709,7 @@ class CppBackend extends Backend {
         }
       }
  
-      def outputAllClkDomains() {
+      def outputCpp() {
         // Are we generating partitioned islands?
         if (!partitionIslands) {
           //.values.map(_._1.body) ++ (code.values.map(x => (x._2.append(x._3))))
@@ -1741,19 +1800,8 @@ class CppBackend extends Backend {
       }
     }
 
-    val clkDomains = new ClockDomains
-
-    if (Driver.isGenHarness) {
-      genHarness(c, c.name);
-    }
-    if (!Params.space.isEmpty) {
-      val out_p = createOutputFile(c.name + ".p");
-      out_p.write(Params.toDotpStringParams);
-      out_p.close();
-    }
-
     ChiselError.info("populating clock domains")
-    clkDomains.populate()
+    val nodeCode: NodeCodeGenerator = if(partitionIslands) new IslandsCodeGen else new MonolithicCodeGen
 
     println("CppBackend::elaborate: need " + needShadow.size + ", redundant " + (potentialShadowRegisters - needShadow.size) + " shadow registers")
 
@@ -1799,14 +1847,14 @@ class CppBackend extends Backend {
     }
     // Ensure we start off in a new file before we start outputting the clock_lo/hi.
     advanceCppFile()
-    clkDomains.outputAllClkDomains()
+    nodeCode.outputCpp()
 
     advanceCppFile()
     // Generate API methods
     val nInitMappingTableMethods = genInitMappingTableMethod(mappings)
 
     // Finally, generate the header - once we know how many methods we'll have.
-    genHeader(vcd, islands, nInitMethods, nSetCircuitFromMethods, nDumpInitMethods, nDumpMethods, nInitMappingTableMethods)
+    genHeader(vcd, nInitMethods, nSetCircuitFromMethods, nDumpInitMethods, nDumpMethods, nInitMappingTableMethods)
 
     maxFiles = out_cpps.length
 
