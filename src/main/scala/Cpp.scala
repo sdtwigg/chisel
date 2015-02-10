@@ -1493,155 +1493,88 @@ class CppBackend extends Backend {
 
       // Some helper classes for creating code repositories
       val clockArgs = Array[CTypedName](CTypedName("dat_t<1>", "reset"))
-      object ClockHiMethods {def apply(clock: Clock): ClockHiMethods = new ClockHiMethods(clock)}
-      class ClockHiMethods(clock: Clock) {
-        val setup = CMethod(CTypedName("void", "clock_hi" + clkName(clock)), clockArgs)
-        val latch = CMethod(CTypedName("void", "clock_hi_dummy" + clkName(clock)), clockArgs)
+      object ClockHiMethods {
+        def apply(clock: Clock, prefix: String): ClockHiMethods = new ClockHiMethods(clock, prefix)
       }
+      class ClockHiMethods(clock: Clock, prefix: String) {
+        val setup = CMethod(CTypedName("void", prefix + "clock_hi" + clkName(clock)), clockArgs)
+        val latch = CMethod(CTypedName("void", prefix + "clock_hi_dummy" + clkName(clock)), clockArgs)
+      }
+      class LogicCodeRepo(prefix: String) {
+        val combinational = CMethod(CTypedName("void", s"${prefix}clock_lo"), clockArgs)
+        val sequential    = Driver.clocks.map( clock => (clock -> ClockHiMethods(clock, prefix)) ).toMap
+
+        def addNode(node: Node): Unit = {
+          combinational.body.append(emitDefLo(node))
+          node match {
+            case d: Delay => {
+              val clockMethods = sequential.getOrElse(d.clock,
+                throw new Exception(s"Unregistered clock ${d.clock} discovered at ${d}")
+              )
+              clockMethods.setup.body.append(emitInitHi(d))
+              clockMethods.latch.body.append(emitDefHi(d))
+            }
+            case _ =>
+          }
+        }
+
+        def outputCpp() = {
+          createCppFile()
+          writeCppFile(combinational.head + combinational.body.result + combinational.tail)
+
+          for(clockMethods <- sequential.values) {
+            createCppFile()
+            writeCppFile(clockMethods.setup.head + clockMethods.setup.body.result)
+            // Note, we tacitly assume that the clock_hi setup and latch
+            // code have effectively the same signature and tail.
+            assert(clockMethods.setup.tail == clockMethods.latch.tail)
+            writeCppFile(clockMethods.latch.body.result + clockMethods.latch.tail)
+          }
+        }
+      }
+      object LogicCodeRepo {def apply(prefix: String) = new LogicCodeRepo(prefix)}
 
       def outputCpp(): Unit
     }
 
     class MonolithicCodeGen extends NodeCodeGenerator {
       // Repositories for code
-      val allClockMethods = Driver.clocks.map(clock => (clock -> ClockHiMethods(clock))).toMap
-      val propogateCode = CMethod(CTypedName("void", "clock_lo"), clockArgs)
+      val mainRepo = LogicCodeRepo("") //Master repo so no prefix!
 
       // Traverse graph to fill repositories
-      for (n <- Driver.orderedNodes) {
-        propogateCode.body.append(emitDefLo(n))
-        n match {
-          case d: Delay => {
-            val clockMethods = allClockMethods.getOrElse(d.clock,
-              throw new Exception(s"Unregistered clock ${d.clock} discovered at ${d}")
-            )
-            clockMethods.setup.body.append(emitInitHi(d))
-            clockMethods.latch.body.append(emitDefHi(d))
-          }
-          case _ =>
-        }
-      }
+      for (node <- Driver.orderedNodes) { mainRepo.addNode(node) }
 
       def outputCpp() = {
-        createCppFile()
-        writeCppFile(propogateCode.head + propogateCode.body.result + propogateCode.tail)
-
-        for(clockMethods <- allClockMethods.values) {
-          createCppFile()
-          writeCppFile(clockMethods.setup.head + clockMethods.setup.body.result)
-          // Note, we tacitly assume that the clock_hi setup and latch
-          // code have effectively the same signature and tail.
-          assert(clockMethods.setup.tail == clockMethods.latch.tail)
-          writeCppFile(clockMethods.latch.body.result + clockMethods.latch.tail)
-        }
+        mainRepo.outputCpp()
       }
 
     }
 
     class IslandsCodeGen extends NodeCodeGenerator {
-      // If we're partitioning a monolithic circuit into separate islands
-      // of combinational logic, generate those islands now.
-
-      val islands = createIslands()
-      val maxIslandId = islands.map(_.islandId).max
-      val nodeToIslandArray = generateNodeToIslandArray(islands)
-
-      type ClockCodeMethods = HashMap[Clock, (CMethod, CMethod, CMethod)]
-      val code = new ClockCodeMethods
-      val islandClkCode = new HashMap[Int, ClockCodeMethods]
-      val islandStarted = Array.fill(3, maxIslandId + 1)(0)    // An array to keep track of the first time we added code to an island.
-      val islandOrder = Array.fill(3, islands.size)(0)         // An array to keep track of the order in which we should output island code.
-      var islandSequence = Array.fill(3)(0)
+      // Configuration or debugging flags
       val showProgress = false
 
-      for (clock <- Driver.clocks) {
-        // All clock methods take the same arguments and return void.
-        val clockArgs = Array[CTypedName](CTypedName("dat_t<1>", "reset"))
-        val clockLoName = "clock_lo" + clkName(clock)
-        val clock_dlo = new CMethod(CTypedName("void", clockLoName), clockArgs)
-        val clockHiName = "clock_hi" + clkName(clock)
-        val clock_ihi = new CMethod(CTypedName("void", clockHiName), clockArgs)
-        // For simplicity, we define a dummy method for the clock_hi exec code.
-        // We won't actually call such a  method - its code will be inserted into the
-        // clock_hi method after all the clock_hi initialization code.
-        val clockHiDummyName = "clock_hi_dummy" + clkName(clock)
-        val clock_xhi = new CMethod(CTypedName("void", clockHiDummyName), clockArgs)
-        code += (clock -> ((clock_dlo, clock_ihi, clock_xhi)))
-        // If we're generating islands of combinational logic,
-        // have the main clock code call the island specific code,
-        // and generate that island specific clock_(hi|lo) code.
-        for (island <- islands) {
-          val islandId = island.islandId
-          // Do we need a new entry for this mapping?
-          if (!islandClkCode.contains(islandId)) {
-            islandClkCode += ((islandId, new ClockCodeMethods))
-          }
-          val clockLoName = "clock_lo" + clkName(clock) + "_I_" + islandId
-          val clock_dlo_I = new CMethod(CTypedName("void", clockLoName), clockArgs)
-          // Unlike the unpartitioned case, we will generate and call separate
-          // initialize and execute clock_hi methods if we're partitioning.
-          val clockIHiName = "clock_ihi" + clkName(clock) + "_I_" + islandId
-          val clock_ihi_I = new CMethod(CTypedName("void", clockIHiName), clockArgs)
-          val clockXHiName = "clock_xhi" + clkName(clock) + "_I_" + islandId
-          val clock_xhi_I = new CMethod(CTypedName("void", clockXHiName), clockArgs)
-          islandClkCode(islandId) += (clock -> ((clock_dlo_I, clock_ihi_I, clock_xhi_I)))
+      // If we're partitioning a monolithic circuit into separate islands
+      // of combinational logic, generate those islands now.
+      val islands = createIslands()
+      val nodeToIslandArray = generateNodeToIslandArray(islands)
+
+      // Create a map of repositories for island code indexed by islandId
+      val allIslandCode: Map[Int, LogicCodeRepo] = 
+        islands.map( island => (island.islandId -> LogicCodeRepo(s"island${island.islandId}_")) ).toMap
+
+      // Traverse the graph to fill the repositories
+      def isNodeInIsland(node: Node, island: Island): Boolean = {
+        return island == null || nodeToIslandArray(node._id).contains(island)
+      }
+
+      for (node <- Driver.orderedNodes) {
+        for(island <- islands if isNodeInIsland(node, island)) {
+          allIslandCode(island.islandId).addNode(node)
         }
       }
 
-      def populate() {
-        var nodeCount = 0
-        def isNodeInIsland(node: Node, island: Island): Boolean = {
-          return island == null || nodeToIslandArray(node._id).contains(island)
-        }
-
-        // Return tuple of booleans if we actually added any clock code.
-        def addClkDefs(n: Node, codeMethods: ClockCodeMethods): (Boolean, Boolean, Boolean) = {
-          val defLo = emitDefLo(n)
-          val initHi = emitInitHi(n)
-          val defHi = emitDefHi(n)
-          val clockNode = throw new Exception("ADD THIS")//clock(n)
-          if (defLo != "" || initHi != "" || defHi != "") {
-            codeMethods(clockNode)._1.body.append(defLo)
-            codeMethods(clockNode)._2.body.append(initHi)
-            codeMethods(clockNode)._3.body.append(defHi)
-          }
-          (defLo != "", initHi != "", defHi != "")
-        }
-
-        // Should we determine which shadow registers we need?
-        // Done in base class constructor
-
-        // We're generating partitioned islands
-        val addedCode = new Array[Boolean](3)
-        for (m <- Driver.orderedNodes) {
-          for (island <- islands) {
-            if (isNodeInIsland(m, island)) {
-              val islandId = island.islandId
-              val codeMethods = islandClkCode(islandId)
-              val addedCodeTuple = addClkDefs(m, codeMethods)
-              addedCode(0) = addedCodeTuple._1
-              addedCode(1) = addedCodeTuple._2
-              addedCode(2) = addedCodeTuple._3
-              // Update the generation number if we added any code to this island.
-              for (lohi <- 0 to 2) {
-                if (addedCode(lohi)) {
-                  // Is this the first time we've added code to this island?
-                  if (islandStarted(lohi)(islandId) == 0) {
-                    islandOrder(lohi)(islandSequence(lohi)) = islandId
-                    islandSequence(lohi) += 1
-                    islandStarted(lohi)(islandId) = islandSequence(lohi)
-                  }
-                }
-              }
-            }
-          }
-          nodeCount += 1
-          if (showProgress && (nodeCount % 1000) == 0) {
-            println("ClockDomains: populated " + nodeCount + " nodes.")
-          }
-        }
-      }
-      populate() // CALL THIS DURING CONSTRUCTION
+      val mainRepo = LogicCodeRepo("") // holds the functions that calls-out to island functions
 
       // This is the opposite of LineLimitedMethods.
       // It collects output until a threshold is reached.
@@ -1692,77 +1625,57 @@ class CppBackend extends Backend {
       }
  
       def outputCpp() {
-        // Are we generating partitioned islands?
         // We allow for the consolidation of the islands.
         // Keeping them distinct causes the object to balloon in size,
         // requiring three methods for each island.
 
+        // Coalesce combinational methods
         val accumulatedClockLos = new CoalesceMethods(lineLimitFunctions)
-        // Output the clock code in the correct order.
-        for (islandId <- islandOrder(0) if islandId > 0) {
-          for ((clock, clkcodes) <- islandClkCode(islandId)) {
-            val clock_lo = clkcodes._1
-            accumulatedClockLos.append(clock_lo)
-            clock_lo.body.clear()      // free the memory
-          }
+        for (islandCode <- allIslandCode.values) {
+          val clock_lo = islandCode.combinational
+          accumulatedClockLos.append(clock_lo)
+          clock_lo.body.clear()      // free the memory
         }
         accumulatedClockLos.done()
-
-        // Now emit the calls on the accumulated methods from the main clock_lo method.
-        for ((clock, clkcodes) <- code) {
-          val clock_lo = clkcodes._1
-          createCppFile()
-          // This is just the definition of the main clock_lo method.
-          writeCppFile(clock_lo.head)
-          // Output the actual calls to the island specific clock_lo code.
-          for (clockLoMethod <- accumulatedClockLos.separateMethods) {
-            writeCppFile("\t" + clockLoMethod.genCall)
-          }
-          writeCppFile("}\n")
-        }
-
-        // Output the island-specific clock_hi init code
-        val accumulatedClockHiIs = new CoalesceMethods(lineLimitFunctions)
-        for (islandId <- islandOrder(1) if islandId > 0) {
-          for (clockHiI <- islandClkCode(islandId).values.map(_._2)) {
-            accumulatedClockHiIs.append(clockHiI)
-            clockHiI.body.clear()         // free the memory.
-          }
-        }
-        accumulatedClockHiIs.done()
-
-        // Output the island-specific clock_hi def code
-        val accumulatedClockHiXs = new CoalesceMethods(lineLimitFunctions)
-        for (islandId <- islandOrder(1) if islandId > 0) {
-          for (clockHiX <- islandClkCode(islandId).values.map(_._3)) {
-            accumulatedClockHiXs.append(clockHiX)
-            clockHiX.body.clear()         // free the memory.
-          }
-        }
-        accumulatedClockHiXs.done()
-
-        // Output the code to call the island-specific clock_hi (init and exec) code.
-        for ((clock, clkcodes) <- code) {
-          val clock_ihi = clkcodes._2
-          val clock_xhi = clkcodes._3
-          createCppFile()
-          // This is just the definition of the main clock_hi init method.
-          writeCppFile(clock_ihi.head)
-          // Output the actual calls to the island specific clock code.
-          for (method <- accumulatedClockHiIs.separateMethods) {
-            writeCppFile("\t" + method.genCall)
-          }
-          for (method <- accumulatedClockHiXs.separateMethods) {
-            writeCppFile("\t" + method.genCall)
-          }
-          writeCppFile(clock_xhi.tail)
-        }
         
-        // Put the accumulated method definitions where the header
-        // generation code can find them.
-        for( method <- accumulatedClockLos.separateMethods ++ accumulatedClockHiIs.separateMethods ++ accumulatedClockHiXs.separateMethods) {
-          clockPrototypes += method.prototype
+        // Now emit the calls on the accumulated methods into the main clock_lo method.
+        for (clockLoMethod <- accumulatedClockLos.separateMethods) {
+          mainRepo.combinational.body.append("\t " + clockLoMethod.genCall)
         }
+        // Make sure these helper methods are added to the class definition
+        clockPrototypes ++= accumulatedClockLos.separateMethods.map(_.prototype)
+
+        // Coalesce sequential methods by clock in a similar fashion
+        for((clock, mainClockMethods) <- mainRepo.sequential) {
+          val accumulatedClockHiIs = new CoalesceMethods(lineLimitFunctions)
+          val accumulatedClockHiXs = new CoalesceMethods(lineLimitFunctions)
+
+          for(islandCode <- allIslandCode.values) {
+            val islandClockMethods = islandCode.sequential(clock)
+            accumulatedClockHiIs.append(islandClockMethods.setup)
+            accumulatedClockHiXs.append(islandClockMethods.latch)
+
+            islandClockMethods.setup.body.clear()
+            islandClockMethods.latch.body.clear()
+          }
+          accumulatedClockHiIs.done()
+          accumulatedClockHiXs.done()
+
+          for (clockMethod <- accumulatedClockHiIs.separateMethods) {
+            mainClockMethods.setup.body.append("\t " + clockMethod.genCall)
+          }
+          for (clockMethod <- accumulatedClockHiXs.separateMethods) {
+            mainClockMethods.latch.body.append("\t " + clockMethod.genCall)
+          }
+          
+          // Make sure these helper methods are added to the class definition
+          clockPrototypes ++= accumulatedClockHiIs.separateMethods.map(_.prototype)
+          clockPrototypes ++= accumulatedClockHiXs.separateMethods.map(_.prototype)
+        }
+
+        // Actually output code
+        mainRepo.outputCpp()
+
       }
     }
 
